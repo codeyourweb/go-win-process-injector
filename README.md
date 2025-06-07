@@ -1,11 +1,39 @@
 # Go-win-process-injector
 
 ## Description
-During my researches on process injection in Go, i have only found shellcode injections. But, in my case, I needed to include complex code in the process i was injecting into without instability linked to my action.
+This program is highly configurable process injector made in Go that can run both in interactive mode or as a Windows Service.
 
-This complex code was compiled in a Go DLL. However, Go does not incorporate logic similar to DllMain to allow direct execution of a function once the code has been injected. This program therefore takes care of finding the address of the target function and then executing it in the context of the process where the injection took place. 
+This project was born when during my researches on process injections in Go. I needed to execute complex code made in Go with a DLL injection but Go does not incorporate logic similar to DllMain to allow direct execution once the code has been injected. This injector takes care of finding the address of the target function and then executing it in the context of the process where the injection took place.
 
-## Instruction, example and sequence of the injection
+## Compilation
+* Install golang latest version [here](https://go.dev/)
+* compile to exe with `go build -ldflags "-s -w" .`
+
+## YAML Config File example
+```
+    injector_log_level: "LOGLEVEL_INFO"                               # use LOGLEVEL_DEBUG for a verbose logging 
+    injector_log_file: "C:\\Windows\\Temp\\goprocinjector.log"        # let blank if you don't want to log in a file                           
+    process_injections:                                               # add your DLL injection as a list like in this example
+    - name: "ClipboardMonitor_WebBrowser"
+        processes: 
+        - "firefox.exe"
+        - "chrome.exe"
+        process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
+        process_injection_dll_function: "ClipboardMonitor"
+        process_injection_refresh_interval: 5
+    - name: "ClipboardMonitor_Explorer"
+        processes: 
+        - "explorer.exe"
+        process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
+        process_injection_dll_function: "ClipboardMonitor"
+        process_injection_refresh_interval: 30
+```
+
+## Execution
+* Just launch executable with `goprocinjector.exe -c "C:\\Path\\To\\Your\\goprocinjector.yaml"`
+* You can also register it as a windows service with `sc ceate` if your want a permanent execution at Windows startup 
+
+## Injection code details
 
 Quick and easy way:
 * Use injectInProcess() to inject in the specified PID and call any selected function inside the memory space of this process
@@ -17,7 +45,7 @@ If you want more details on how it works:
 * findSymbolRVA() identify the relative virtual address of your function in the dll
 * Finally, callRemoteFunction() execute it in a new thread of your target PID
 
-Process output:
+## Process output:
 ```
 [INFO] Starting process injection...
 [INFO] Found process: Notepad.exe (PID: 17472)
