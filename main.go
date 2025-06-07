@@ -2,52 +2,138 @@ package main
 
 import (
 	"fmt"
-	"strings"
+	"log"
+	"os"
 	"time"
 
+	"github.com/akamensky/argparse"
 	"github.com/shirou/gopsutil/process"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/debug"
 )
 
-func main() {
-	// Fill this variables to make it work
-	injectProcessNameList := []string{"notepad.exe"} // List of process names to inject into
-	injectionDLLPath := "C:\\Temp\\MyDll.dll"        // Path to the DLL to inject
-	injectionFunctionName := "MyInjectFunction"      // Name of the function to call in the DLL
+func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, injectionFunctionName string, refreshInterval int, quit <-chan struct{}) {
+	excludedPID := []uint32{0}
 
-	SetLogLevel(LOGLEVEL_DEBUG)
-	logMessage(LOGLEVEL_INFO, "Starting process injection...\n")
+	logMessage(LOGLEVEL_INFO, "Injector routine started.")
+
+	ticker := time.NewTicker(time.Duration(refreshInterval) * time.Second)
+	tickerActive := true
 
 	for {
-		processes, error := process.Processes()
-		if error != nil {
-			logMessage(LOGLEVEL_ERROR, fmt.Sprintf("Error getting processes: %v\n", error))
-			continue
-		}
+		select {
+		case <-ticker.C:
+			select {
+			case <-quit:
+				logMessage(LOGLEVEL_INFO, "Shutting down process injector service.")
+				ticker.Stop()
+				return
+			default:
+			}
 
-		for _, process := range processes {
-			processName, error := process.Name()
+			processes, error := process.Processes()
 			if error != nil {
-				logMessage(LOGLEVEL_ERROR, fmt.Sprintf("Error getting process name: %v\n", error))
+				logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Error getting processes: %v", error))
 				continue
 			}
 
-			for _, proc := range injectProcessNameList {
-				if strings.EqualFold(proc, processName) {
-					modHandle, err := GetInjectedLibraryModuleHandle(uint32(process.Pid), injectionDLLPath)
+			for _, proc := range processes {
+				select {
+				case <-quit:
+					logMessage(LOGLEVEL_INFO, "Shutting down process injector service.")
+					ticker.Stop()
+					return
+				default:
+				}
+
+				processName, error := proc.Name()
+				if error != nil {
+					logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Error getting process name for PID %d: %v", proc.Pid, error))
+					continue
+				}
+
+				if isProcessNameInList(processName, injectProcessNameList) {
+					modHandle, err := GetInjectedLibraryModuleHandle(uint32(proc.Pid), injectionDLLPath)
 					if err != nil {
-						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d Error checking module handle: %v\n", process.Pid, err))
+						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d Error checking module handle: %v", proc.Pid, err))
 						continue
 					}
 
-					if modHandle == 0 {
-						logMessage(LOGLEVEL_INFO, fmt.Sprintf("Found process: %s (PID: %d)\n", processName, process.Pid))
-						injectInProcess(uint32(process.Pid), processName, injectionDLLPath, injectionFunctionName)
+					if modHandle == 0 && !isPidInExclusion(excludedPID, uint32(proc.Pid)) {
+						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Found process to inject: %s (PID: %d)", processName, proc.Pid))
+						err = injectInProcess(uint32(proc.Pid), processName, injectionDLLPath, injectionFunctionName)
+						if err != nil {
+							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Error injecting DLL: %v", proc.Pid, err))
+						} else {
+							excludedPID = append(excludedPID, uint32(proc.Pid))
+							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID %d added to exclusion list.", proc.Pid))
+						}
+					} else if modHandle != 0 {
+						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Process %s (PID: %d) is already injected (handle: %x).", processName, proc.Pid, modHandle))
 					} else {
-						logMessage(LOGLEVEL_WARNING, fmt.Sprintf("Process %s (PID: %d) is already injected.\n", processName, process.Pid))
+						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Process %s (PID: %d) is in exclusion list.", processName, proc.Pid))
 					}
 				}
 			}
+
+		case <-quit:
+			logMessage(LOGLEVEL_INFO, "Shutting down process injector service.")
+			if tickerActive {
+				ticker.Stop()
+			}
+			return
 		}
-		time.Sleep(5 * time.Second)
+	}
+}
+
+func main() {
+	// config file argument parsing
+	parser := argparse.NewParser("Go Process Injector", "Process Injector Service for Windows")
+	configFilePath := parser.String("c", "config", &argparse.Options{Required: true, Help: "YAML configuration file"})
+
+	err := parser.Parse(os.Args)
+	if err != nil {
+		fmt.Print(parser.Usage(err))
+	}
+
+	// load yaml configuration
+	err = LoadConfig(*configFilePath)
+	if err != nil {
+		log.Fatalln(fmt.Errorf("error loading configuration: %v", err))
+	}
+
+	// initialize logger
+	var APP_LOGLEVEL int
+	switch AppConfig.InjectorLogLevel {
+	case "LOGLEVEL_DEBUG":
+		APP_LOGLEVEL = LOGLEVEL_DEBUG
+	case "LOGLEVEL_WARNING":
+		APP_LOGLEVEL = LOGLEVEL_WARNING
+	case "LOGLEVEL_ERROR":
+		APP_LOGLEVEL = LOGLEVEL_ERROR
+	default:
+		APP_LOGLEVEL = LOGLEVEL_INFO
+	}
+
+	InitLogger(APP_LOGLEVEL)
+	if AppConfig.InjectorLogFile != "" {
+		SetLogToFile(AppConfig.InjectorLogFile)
+	}
+
+	// start in interactive mode or as a Windows service
+	isWindowsSerice, err := svc.IsWindowsService()
+	if err != nil {
+		log.Fatalln(fmt.Errorf("error checking if running as a Windows service: %v", err))
+	}
+
+	if isWindowsSerice {
+		runService("pInjectService", false)
+	} else {
+		logMessage(LOGLEVEL_INFO, "Running in interactive mode.")
+		err = debug.Run("pInjectService", &pInjectService{})
+		if err != nil {
+			log.Fatalf("Error running service in interactive mode: %v", err)
+		}
+		return
 	}
 }

@@ -1,0 +1,16 @@
+injector_log_level: "LOGLEVEL_INFO"
+injector_log_file: "C:\\Windows\\Temp\\goprocinjector.log"
+process_injections: 
+  - name: "ClipboardMonitor_WebBrowser"
+    processes: 
+      - "firefox.exe"
+      - "chrome.exe"
+    process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
+    process_injection_dll_function: "ClipboardMonitor"
+    process_injection_refresh_interval: 5
+  - name: "ClipboardMonitor_Explorer"
+    processes: 
+      - "explorer.exe"
+    process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
+    process_injection_dll_function: "ClipboardMonitor"
+    process_injection_refresh_interval: 30

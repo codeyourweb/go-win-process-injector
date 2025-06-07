@@ -1,10 +1,12 @@
-module go-win-process-injector
+module goprocinjector
 
 go 1.23.6
 
 require (
+	github.com/akamensky/argparse v1.4.0
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	golang.org/x/sys v0.32.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
