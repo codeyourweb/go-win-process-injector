@@ -11,27 +11,27 @@ This project was born when during my researches on process injections in Go. I n
 
 ## YAML Config File example
 ```
-    injector_log_level: "LOGLEVEL_INFO"                               # use LOGLEVEL_DEBUG for a verbose logging 
-    injector_log_file: "C:\\Windows\\Temp\\goprocinjector.log"        # let blank if you don't want to log in a file                           
-    process_injections:                                               # add your DLL injection as a list like in this example
-    - name: "ClipboardMonitor_WebBrowser"
-        processes: 
-        - "firefox.exe"
-        - "chrome.exe"
-        process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
-        process_injection_dll_function: "ClipboardMonitor"
-        process_injection_refresh_interval: 5
-    - name: "ClipboardMonitor_Explorer"
-        processes: 
-        - "explorer.exe"
-        process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
-        process_injection_dll_function: "ClipboardMonitor"
-        process_injection_refresh_interval: 30
+injector_log_level: "LOGLEVEL_INFO"                               # use LOGLEVEL_DEBUG for a verbose logging 
+injector_log_file: "C:\\Windows\\Temp\\goprocinjector.log"        # let blank if you don't want to log in a file                           
+process_injections:                                               # add your DLL injection as a list like in this example
+- name: "ClipboardMonitor_WebBrowser"
+    processes: 
+    - "firefox.exe"
+    - "chrome.exe"
+    process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
+    process_injection_dll_function: "ClipboardMonitor"
+    process_injection_refresh_interval: 5
+- name: "ClipboardMonitor_Explorer"
+    processes: 
+    - "explorer.exe"
+    process_injection_dll_path: "C:\\Users\\shado\\Desktop\\clipboardMonitor\\ClipboardMonitor.dll"
+    process_injection_dll_function: "ClipboardMonitor"
+    process_injection_refresh_interval: 30
 ```
 
 ## Execution
 * Just launch executable with `goprocinjector.exe -c "C:\\Path\\To\\Your\\goprocinjector.yaml"`
-* You can also register it as a windows service with `sc ceate` if your want a permanent execution at Windows startup 
+* You can also register it as a windows service with `sc create` if your want a permanent execution at Windows startup 
 
 ## Injection code details
 
