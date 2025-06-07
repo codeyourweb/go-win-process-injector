@@ -46,10 +46,6 @@ func LoadConfig(configPath string) error {
 	}
 	AppConfig.InjectorLogLevel = strings.ToUpper(AppConfig.InjectorLogLevel)
 
-	if AppConfig.InjectorLogFile == "" {
-		AppConfig.InjectorLogFile = "C:\\Windows\\Temp\\goprocinjector.log"
-	}
-
 	for i, pi := range AppConfig.ProcessInjections {
 		if pi.ProcessInjectionRefreshInterval == 0 {
 			AppConfig.ProcessInjections[i].ProcessInjectionRefreshInterval = 5 // Default to 5 seconds
