@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/windows/svc/debug"
 )
 
-func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, injectionFunctionName string, refreshInterval int, quit <-chan struct{}) {
+func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, injectionFunctionName string, injectionFunctionArgs []string, refreshInterval int, quit <-chan struct{}) {
 	excludedPID := []uint32{0}
 
 	logMessage(LOGLEVEL_INFO, "Injector routine started.")
@@ -61,7 +61,7 @@ func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, in
 
 					if modHandle == 0 && !isPidInExclusion(excludedPID, uint32(proc.Pid)) {
 						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Found process to inject: %s (PID: %d)", processName, proc.Pid))
-						err = injectInProcess(uint32(proc.Pid), processName, injectionDLLPath, injectionFunctionName)
+						err = injectInProcess(uint32(proc.Pid), processName, injectionDLLPath, injectionFunctionName, injectionFunctionArgs)
 						if err != nil {
 							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Error injecting DLL: %v", proc.Pid, err))
 						} else {

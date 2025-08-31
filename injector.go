@@ -12,6 +12,7 @@ var (
 	kernel32DLL              = syscall.NewLazyDLL("kernel32.dll")
 	loadLibraryW             = kernel32DLL.NewProc("LoadLibraryW")
 	virtualAllocEx           = kernel32DLL.NewProc("VirtualAllocEx")
+	virtualFreeEx            = kernel32DLL.NewProc("VirtualFreeEx")
 	writeProcessMemory       = kernel32DLL.NewProc("WriteProcessMemory")
 	createRemoteThread       = kernel32DLL.NewProc("CreateRemoteThread")
 	getThreadId              = kernel32DLL.NewProc("GetThreadId")
@@ -93,7 +94,6 @@ func injectDLL(processID uint32, processHandle windows.Handle, dllPath string) (
 		return 0, fmt.Errorf("WaitForSingleObject failed: %v", err)
 	}
 
-	// Récupérer l'adresse de la DLL chargée dans le processus distant
 	remoteDLLHandle, err := GetInjectedLibraryModuleHandle(processID, dllPath)
 	if err != nil {
 		return 0, fmt.Errorf("GetModuleHandle failed: %v", err)
@@ -128,41 +128,116 @@ func GetInjectedLibraryModuleHandle(processID uint32, injectedDllPath string) (u
 	return 0, nil
 }
 
-func callRemoteFunction(processID uint32, dllBaseAddress uintptr, functionName string, functionRVA uintptr) error {
-	processHandle, err := syscall.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, processID)
+func callRemoteFunction(processID uint32, dllBaseAddress uintptr, functionName string, functionRVA uintptr, args []string) error {
+	var argToPass uintptr = 0
+	processHandle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ|windows.PROCESS_VM_WRITE|windows.PROCESS_VM_OPERATION|windows.PROCESS_CREATE_THREAD, false, processID)
 	if err != nil {
 		return fmt.Errorf("error opening process: %w", err)
 	}
-	defer syscall.CloseHandle(syscall.Handle(processHandle))
+	defer windows.CloseHandle(processHandle)
+
+	if len(args) > 0 {
+		totalStringSize := uintptr(0)
+		for _, arg := range args {
+			totalStringSize += uintptr(len(arg)*2 + 2)
+		}
+
+		remoteStringsBlock, _, err := virtualAllocEx.Call(
+			uintptr(processHandle),
+			0,
+			totalStringSize,
+			uintptr(MEM_RESERVE|MEM_COMMIT),
+			uintptr(windows.PAGE_READWRITE),
+		)
+		if remoteStringsBlock == 0 {
+			return fmt.Errorf("VirtualAllocEx for strings failed: %v", err)
+		}
+
+		totalPointersSize := uintptr(len(args)) * unsafe.Sizeof(uintptr(0))
+		remotePointersBlock, _, err := virtualAllocEx.Call(
+			uintptr(processHandle),
+			0,
+			totalPointersSize,
+			uintptr(MEM_RESERVE|MEM_COMMIT),
+			uintptr(windows.PAGE_READWRITE),
+		)
+		if remotePointersBlock == 0 {
+			virtualFreeEx.Call(uintptr(processHandle), remoteStringsBlock, 0, windows.MEM_RELEASE)
+			return fmt.Errorf("VirtualAllocEx for pointers failed: %v", err)
+		}
+
+		defer virtualFreeEx.Call(uintptr(processHandle), remoteStringsBlock, 0, windows.MEM_RELEASE)
+		defer virtualFreeEx.Call(uintptr(processHandle), remotePointersBlock, 0, windows.MEM_RELEASE)
+
+		localRemotePointers := make([]uintptr, len(args))
+		currentStringOffset := uintptr(0)
+		for i, arg := range args {
+			argUTF16, err := windows.UTF16FromString(arg)
+			if err != nil {
+				return fmt.Errorf("UTF16FromString failed: %w", err)
+			}
+			argSize := uintptr(len(argUTF16) * 2)
+			remoteStringAddress := remoteStringsBlock + currentStringOffset
+			localRemotePointers[i] = remoteStringAddress
+
+			bytesWritten := uint(0)
+			_, _, err = writeProcessMemory.Call(
+				uintptr(processHandle),
+				remoteStringAddress,
+				uintptr(unsafe.Pointer(&argUTF16[0])),
+				argSize,
+				uintptr(unsafe.Pointer(&bytesWritten)),
+			)
+			if uintptr(bytesWritten) != argSize {
+				return fmt.Errorf("WriteProcessMemory failed for arg '%s': %w", arg, err)
+			}
+			currentStringOffset += argSize
+		}
+
+		bytesWritten := uint(0)
+		_, _, err = writeProcessMemory.Call(
+			uintptr(processHandle),
+			remotePointersBlock,
+			uintptr(unsafe.Pointer(&localRemotePointers[0])),
+			totalPointersSize,
+			uintptr(unsafe.Pointer(&bytesWritten)),
+		)
+		if uintptr(bytesWritten) != totalPointersSize {
+			return fmt.Errorf("WriteProcessMemory failed for pointer block: %w", err)
+		}
+
+		argToPass = remotePointersBlock
+	}
 
 	remoteFunctionAddress := dllBaseAddress + functionRVA
-
 	threadHandle, _, err := createRemoteThread.Call(
 		uintptr(processHandle),
 		0,
 		0,
 		remoteFunctionAddress,
-		0,
+		argToPass,
 		0,
 		0,
 	)
 	if threadHandle == 0 {
-		return fmt.Errorf("CreateRemoteThread failed while calling '%s'- %v", functionName, err)
+		return fmt.Errorf("CreateRemoteThread failed while calling '%s': %v", functionName, err)
 	}
-	defer syscall.CloseHandle(syscall.Handle(threadHandle))
+	defer windows.CloseHandle(windows.Handle(threadHandle))
+
+	_, err = windows.WaitForSingleObject(windows.Handle(threadHandle), windows.INFINITE)
+	if err != nil {
+		return fmt.Errorf("WaitForSingleObject failed: %w", err)
+	}
 
 	threadId, _, err := getThreadId.Call(uintptr(threadHandle))
-
 	if threadId == 0 {
 		return fmt.Errorf("GetThreadId failed: %v", err)
 	}
-
 	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Remote Thread ID: %d", processID, threadId))
-
 	return nil
 }
 
-func injectInProcess(processID uint32, processName string, dllPath string, dllFunction string) error {
+func injectInProcess(processID uint32, processName string, dllPath string, dllFunction string, dllFunctionArgs []string) error {
 	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Opening process %s with 0x%x access...", processID, processName, windows.PROCESS_CREATE_THREAD|windows.PROCESS_VM_WRITE|windows.PROCESS_VM_OPERATION))
 	processHandle, err := syscall.OpenProcess(windows.PROCESS_CREATE_THREAD|windows.PROCESS_VM_WRITE|windows.PROCESS_VM_OPERATION, false, processID)
 	if err != nil {
@@ -189,10 +264,9 @@ func injectInProcess(processID uint32, processName string, dllPath string, dllFu
 	}
 	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Function '%s' RVA: 0x%x", processID, dllFunction, FunctionRVA))
 
-	err = callRemoteFunction(processID, dllBaseAddress, dllFunction, uintptr(FunctionRVA))
+	err = callRemoteFunction(processID, dllBaseAddress, dllFunction, uintptr(FunctionRVA), dllFunctionArgs)
 	if err != nil {
-
-		return fmt.Errorf("error calling remote function %v", err)
+		return fmt.Errorf("error calling remote function: %v", err)
 	}
 	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Function '%s' successfully called.", processID, dllFunction))
 
