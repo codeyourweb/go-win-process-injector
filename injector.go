@@ -72,6 +72,7 @@ func injectDLL(processID uint32, processHandle windows.Handle, dllPath string) (
 	}
 	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Bytes written: %d", processID, bytesWritten))
 
+	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - CreateRemoteThread...", processID))
 	threadHandle, _, err := createRemoteThread.Call(
 		uintptr(processHandle),
 		0,
@@ -84,7 +85,6 @@ func injectDLL(processID uint32, processHandle windows.Handle, dllPath string) (
 	if threadHandle == 0 {
 		return 0, fmt.Errorf("CreateRemoteThread failed: %v", err)
 	}
-	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - CreateRemoteThread...", processID))
 	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Thread Handle: %d", processID, threadHandle))
 	defer syscall.CloseHandle(syscall.Handle(threadHandle))
 
@@ -129,84 +129,62 @@ func GetInjectedLibraryModuleHandle(processID uint32, injectedDllPath string) (u
 }
 
 func callRemoteFunction(processID uint32, dllBaseAddress uintptr, functionName string, functionRVA uintptr, args []string) error {
-	var argToPass uintptr = 0
 	processHandle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ|windows.PROCESS_VM_WRITE|windows.PROCESS_VM_OPERATION|windows.PROCESS_CREATE_THREAD, false, processID)
 	if err != nil {
 		return fmt.Errorf("error opening process: %w", err)
 	}
 	defer windows.CloseHandle(processHandle)
 
-	if len(args) > 0 {
-		totalStringSize := uintptr(0)
-		for _, arg := range args {
-			totalStringSize += uintptr(len(arg)*2 + 2)
-		}
-
-		remoteStringsBlock, _, err := virtualAllocEx.Call(
+	totalSize := uintptr(0)
+	for _, arg := range args {
+		totalSize += uintptr(len(arg)*2 + 2)
+	}
+	totalSize += uintptr(len(args)) * unsafe.Sizeof(uintptr(0))
+	remoteArgBlock := uintptr(0)
+	if totalSize > 0 {
+		remoteArgBlock, _, err := virtualAllocEx.Call(
 			uintptr(processHandle),
 			0,
-			totalStringSize,
+			totalSize,
 			uintptr(MEM_RESERVE|MEM_COMMIT),
 			uintptr(windows.PAGE_READWRITE),
 		)
-		if remoteStringsBlock == 0 {
-			return fmt.Errorf("VirtualAllocEx for strings failed: %v", err)
+		if remoteArgBlock == 0 {
+			return fmt.Errorf("VirtualAllocEx failed: %v", err)
 		}
+		defer virtualFreeEx.Call(uintptr(processHandle), remoteArgBlock, 0, windows.MEM_RELEASE)
+	}
 
-		totalPointersSize := uintptr(len(args)) * unsafe.Sizeof(uintptr(0))
-		remotePointersBlock, _, err := virtualAllocEx.Call(
-			uintptr(processHandle),
-			0,
-			totalPointersSize,
-			uintptr(MEM_RESERVE|MEM_COMMIT),
-			uintptr(windows.PAGE_READWRITE),
-		)
-		if remotePointersBlock == 0 {
-			virtualFreeEx.Call(uintptr(processHandle), remoteStringsBlock, 0, windows.MEM_RELEASE)
-			return fmt.Errorf("VirtualAllocEx for pointers failed: %v", err)
+	remotePointers := make([]uintptr, len(args))
+	currentOffset := uintptr(0)
+
+	for i, arg := range args {
+		argUTF16, err := windows.UTF16FromString(arg)
+		if err != nil {
+			return fmt.Errorf("UTF16FromString failed: %w", err)
 		}
+		argSize := uintptr(len(argUTF16) * 2)
 
-		defer virtualFreeEx.Call(uintptr(processHandle), remoteStringsBlock, 0, windows.MEM_RELEASE)
-		defer virtualFreeEx.Call(uintptr(processHandle), remotePointersBlock, 0, windows.MEM_RELEASE)
-
-		localRemotePointers := make([]uintptr, len(args))
-		currentStringOffset := uintptr(0)
-		for i, arg := range args {
-			argUTF16, err := windows.UTF16FromString(arg)
-			if err != nil {
-				return fmt.Errorf("UTF16FromString failed: %w", err)
-			}
-			argSize := uintptr(len(argUTF16) * 2)
-			remoteStringAddress := remoteStringsBlock + currentStringOffset
-			localRemotePointers[i] = remoteStringAddress
-
-			bytesWritten := uint(0)
-			_, _, err = writeProcessMemory.Call(
-				uintptr(processHandle),
-				remoteStringAddress,
-				uintptr(unsafe.Pointer(&argUTF16[0])),
-				argSize,
-				uintptr(unsafe.Pointer(&bytesWritten)),
-			)
-			if uintptr(bytesWritten) != argSize {
-				return fmt.Errorf("WriteProcessMemory failed for arg '%s': %w", arg, err)
-			}
-			currentStringOffset += argSize
-		}
+		remoteArgAddress := remoteArgBlock + currentOffset
+		remotePointers[i] = remoteArgAddress
 
 		bytesWritten := uint(0)
 		_, _, err = writeProcessMemory.Call(
 			uintptr(processHandle),
-			remotePointersBlock,
-			uintptr(unsafe.Pointer(&localRemotePointers[0])),
-			totalPointersSize,
+			remoteArgAddress,
+			uintptr(unsafe.Pointer(&argUTF16[0])),
+			argSize,
 			uintptr(unsafe.Pointer(&bytesWritten)),
 		)
-		if uintptr(bytesWritten) != totalPointersSize {
-			return fmt.Errorf("WriteProcessMemory failed for pointer block: %w", err)
+		if uintptr(bytesWritten) != argSize {
+			return fmt.Errorf("WriteProcessMemory failed for arg '%s': %w", arg, err)
 		}
+		currentOffset += argSize
+	}
 
-		argToPass = remotePointersBlock
+	var argToPass uintptr
+	if len(remotePointers) > 0 {
+		argToPass = remotePointers[0]
 	}
 
 	remoteFunctionAddress := dllBaseAddress + functionRVA
@@ -222,18 +200,13 @@ func callRemoteFunction(processID uint32, dllBaseAddress uintptr, functionName s
 	if threadHandle == 0 {
 		return fmt.Errorf("CreateRemoteThread failed while calling '%s': %v", functionName, err)
 	}
-	defer windows.CloseHandle(windows.Handle(threadHandle))
+	defer syscall.CloseHandle(syscall.Handle(threadHandle))
 
-	_, err = windows.WaitForSingleObject(windows.Handle(threadHandle), windows.INFINITE)
+	_, err = syscall.WaitForSingleObject(syscall.Handle(threadHandle), syscall.INFINITE)
 	if err != nil {
 		return fmt.Errorf("WaitForSingleObject failed: %w", err)
 	}
 
-	threadId, _, err := getThreadId.Call(uintptr(threadHandle))
-	if threadId == 0 {
-		return fmt.Errorf("GetThreadId failed: %v", err)
-	}
-	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Remote Thread ID: %d", processID, threadId))
 	return nil
 }
 
