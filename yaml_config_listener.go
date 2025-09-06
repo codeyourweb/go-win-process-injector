@@ -22,7 +22,7 @@ type ProcessInjection struct {
 	Processes                       []string `yaml:"processes"`
 	ProcessInjectionDLLPath         string   `yaml:"process_injection_dll_path"`
 	ProcessInjectionDLLFunction     string   `yaml:"process_injection_dll_function"`
-	ProcessInjectionDLLFunctionArgs []string `yaml:"process_injection_dll_function_args"`
+	ProcessInjectionDLLFunctionArg  string   `yaml:"process_injection_arguments"`
 	ProcessInjectionRefreshInterval int      `yaml:"process_injection_refresh_interval"`
 }
 
