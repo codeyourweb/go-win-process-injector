@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"time"
 
@@ -94,10 +92,6 @@ func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, in
 }
 
 func main() {
-	go func() {
-		http.ListenAndServe("localhost:6060", nil)
-	}()
-
 	// config file argument parsing
 	parser := argparse.NewParser("Go Process Injector", "Process Injector Service for Windows")
 	configFilePath := parser.String("c", "config", &argparse.Options{Required: true, Help: "YAML configuration file"})
