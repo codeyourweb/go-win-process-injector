@@ -8,6 +8,7 @@ process_injections:
     process_injection_dll_function: "FunctionWithoutArgument"
     process_injection_arguments: ""
     process_injection_refresh_interval: 5
+    max_injection_retry: 3
   - name: "DemoLibrary_Inject_With_Arguments"
     processes: 
       - "firefox.exe"
@@ -15,3 +16,4 @@ process_injections:
     process_injection_dll_function: "FunctionWithArguments"
     process_injection_arguments: "my arguments here"
     process_injection_refresh_interval: 5
+    max_injection_retry: 3

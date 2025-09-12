@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"time"
 
@@ -12,8 +14,9 @@ import (
 	"golang.org/x/sys/windows/svc/debug"
 )
 
-func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, injectionFunctionName string, injectionFunctionArg string, refreshInterval int, quit <-chan struct{}) {
-	excludedPID := []uint32{0}
+func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, injectionFunctionName string, injectionFunctionArg string, refreshInterval int, maxInjectionRetry int, quit <-chan struct{}) {
+	injectedPIDList := []uint32{0}
+	injectionErrorPIDList := []uint32{0}
 
 	logMessage(LOGLEVEL_INFO, "Injector routine started.")
 
@@ -52,26 +55,30 @@ func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, in
 					continue
 				}
 
-				if isProcessNameInList(processName, injectProcessNameList) {
-					modHandle, err := GetInjectedLibraryModuleHandle(uint32(proc.Pid), injectionDLLPath)
-					if err != nil {
-						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d Error checking module handle: %v", proc.Pid, err))
-						continue
-					}
-
-					if modHandle == 0 && !isPidInExclusion(excludedPID, uint32(proc.Pid)) {
-						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Found process to inject: %s (PID: %d)", processName, proc.Pid))
-						err = injectInProcess(uint32(proc.Pid), processName, injectionDLLPath, injectionFunctionName, injectionFunctionArg)
+				if !isPidInExclusion(injectedPIDList, uint32(proc.Pid)) {
+					if isProcessNameInList(processName, injectProcessNameList) {
+						modHandle, err := GetInjectedLibraryModuleHandle(uint32(proc.Pid), injectionDLLPath)
 						if err != nil {
-							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Error injecting DLL: %v", proc.Pid, err))
-						} else {
-							excludedPID = append(excludedPID, uint32(proc.Pid))
-							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID %d added to exclusion list.", proc.Pid))
+							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d Error checking module handle: %v", proc.Pid, err))
+							continue
 						}
-					} else if modHandle != 0 {
-						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Process %s (PID: %d) is already injected (handle: %x).", processName, proc.Pid, modHandle))
-					} else {
-						logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Process %s (PID: %d) is in exclusion list.", processName, proc.Pid))
+
+						if modHandle == 0 {
+							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Found process to inject: %s (PID: %d)", processName, proc.Pid))
+							err = injectInProcess(uint32(proc.Pid), processName, injectionDLLPath, injectionFunctionName, injectionFunctionArg)
+							if err != nil {
+								logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Error injecting DLL: %v", proc.Pid, err))
+
+								if countOccurrences(injectionErrorPIDList, uint32(proc.Pid)) >= maxInjectionRetry {
+									logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Impossible to inject in process. Adding to exclusions", proc.Pid))
+									injectedPIDList = append(injectedPIDList, uint32(proc.Pid))
+								}
+								injectionErrorPIDList = append(injectionErrorPIDList, uint32(proc.Pid))
+							} else {
+								injectedPIDList = append(injectedPIDList, uint32(proc.Pid))
+								logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID %d added to injected list.", proc.Pid))
+							}
+						}
 					}
 				}
 			}
@@ -87,6 +94,10 @@ func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, in
 }
 
 func main() {
+	go func() {
+		http.ListenAndServe("localhost:6060", nil)
+	}()
+
 	// config file argument parsing
 	parser := argparse.NewParser("Go Process Injector", "Process Injector Service for Windows")
 	configFilePath := parser.String("c", "config", &argparse.Options{Required: true, Help: "YAML configuration file"})

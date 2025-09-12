@@ -37,6 +37,7 @@ func (m *pInjectService) Execute(args []string, r <-chan svc.ChangeRequest, stat
 					inject.ProcessInjectionDLLFunction,
 					inject.ProcessInjectionDLLFunctionArg,
 					inject.ProcessInjectionRefreshInterval,
+					inject.MaxInjectionRetry,
 					quitInjector)
 			}
 		}()

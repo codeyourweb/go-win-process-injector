@@ -24,6 +24,7 @@ type ProcessInjection struct {
 	ProcessInjectionDLLFunction     string   `yaml:"process_injection_dll_function"`
 	ProcessInjectionDLLFunctionArg  string   `yaml:"process_injection_arguments"`
 	ProcessInjectionRefreshInterval int      `yaml:"process_injection_refresh_interval"`
+	MaxInjectionRetry               int      `yaml:"max_injection_retry"`
 }
 
 func LoadConfig(configPath string) error {
