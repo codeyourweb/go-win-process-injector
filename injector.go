@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -14,7 +15,6 @@ var (
 	virtualAllocEx           = kernel32DLL.NewProc("VirtualAllocEx")
 	writeProcessMemory       = kernel32DLL.NewProc("WriteProcessMemory")
 	createRemoteThread       = kernel32DLL.NewProc("CreateRemoteThread")
-	getThreadId              = kernel32DLL.NewProc("GetThreadId")
 	createToolhelp32Snapshot = kernel32DLL.NewProc("CreateToolhelp32Snapshot")
 	process32FirstW          = kernel32DLL.NewProc("Process32FirstW")
 	process32NextW           = kernel32DLL.NewProc("Process32NextW")
@@ -38,6 +38,20 @@ const (
 	MEM_COMMIT         = 0x00001000
 	TH32CS_SNAPPROCESS = 0x00000002
 )
+
+func HandleProcessInjection(processName string, processId uint32, injectionDLLPath string, injectionFunctionName string, injectionFunctionArg string, refreshInterval int, maxInjectionRetry int) {
+	logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Found process to inject: Name=%s, PID=%d", processName, processId))
+	for i := 0; i < maxInjectionRetry; i++ {
+		err := injectInProcess(processId, processName, injectionDLLPath, injectionFunctionName, injectionFunctionArg)
+		if err != nil {
+			logMessage(LOGLEVEL_WARNING, fmt.Sprintf("Error injecting DLL: %v on Name=%s, PID=%d", err, processName, processId))
+			time.Sleep(time.Duration(refreshInterval) * time.Second)
+		} else {
+			logMessage(LOGLEVEL_INFO, fmt.Sprintf("Successfully injected DLL into process Name=%s, PID=%d", processName, processId))
+			return
+		}
+	}
+}
 
 func injectDLL(processID uint32, processHandle windows.Handle, dllPath string) (uintptr, error) {
 	dllPathPtr, err := windows.UTF16PtrFromString(dllPath)

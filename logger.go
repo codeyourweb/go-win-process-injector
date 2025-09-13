@@ -10,8 +10,8 @@ import (
 
 const (
 	LOGLEVEL_DEBUG   = 0
-	LOGLEVEL_INFO    = 1
-	LOGLEVEL_WARNING = 2
+	LOGLEVEL_WARNING = 1
+	LOGLEVEL_INFO    = 2
 	LOGLEVEL_ERROR   = 3
 	LOGLEVEL_FATAL   = 4
 
@@ -71,18 +71,18 @@ func logMessage(level int, message string) {
 
 	logPrefix := ""
 	switch level {
+	case LOGLEVEL_DEV_DEBUG_VERBOSE:
+		logPrefix = "DEV_DEBUG_VERBOSE"
 	case LOGLEVEL_DEBUG:
 		logPrefix = "DEBUG"
-	case LOGLEVEL_INFO:
-		logPrefix = "INFO"
 	case LOGLEVEL_WARNING:
 		logPrefix = "WARNING"
+	case LOGLEVEL_INFO:
+		logPrefix = "INFO"
 	case LOGLEVEL_ERROR:
 		logPrefix = "ERROR"
 	case LOGLEVEL_FATAL:
 		logPrefix = "FATAL"
-	case LOGLEVEL_DEV_DEBUG_VERBOSE:
-		logPrefix = "DEV_DEBUG_VERBOSE"
 	}
 
 	logEntry := fmt.Sprintf("[%s] [%s] Hostname: %s - Username: %s - ProcessName: %s - PID: %d - Message: %s\n",

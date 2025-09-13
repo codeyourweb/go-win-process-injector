@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
+	"syscall"
 
 	"github.com/akamensky/argparse"
 	"github.com/shirou/gopsutil/process"
@@ -13,80 +13,62 @@ import (
 )
 
 func injectorRoutine(injectProcessNameList []string, injectionDLLPath string, injectionFunctionName string, injectionFunctionArg string, refreshInterval int, maxInjectionRetry int, quit <-chan struct{}) {
-	injectedPIDList := []uint32{0}
-	injectionErrorPIDList := []uint32{0}
+	// initial process injection (for already running processes)
+	processes, error := process.Processes()
+	if error != nil {
+		logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Error getting processes: %v", error))
+	}
 
-	logMessage(LOGLEVEL_INFO, "Injector routine started.")
+	for _, proc := range processes {
+		processName, error := proc.Name()
+		if error != nil {
+			logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Error getting process name for PID %d: %v", proc.Pid, error))
+			continue
+		}
 
-	ticker := time.NewTicker(time.Duration(refreshInterval) * time.Second)
-	tickerActive := true
+		if isProcessNameInList(processName, injectProcessNameList) {
+			go func() {
+				HandleProcessInjection(processName, uint32(proc.Pid), injectionDLLPath, injectionFunctionName, injectionFunctionArg, refreshInterval, maxInjectionRetry)
+			}()
+		}
+	}
+
+	// communication channels for WMI service
+	wmiRequests := make(chan wmiServiceRequest)
+	wmiResponses := make(chan wmiServiceResponse)
+
+	// start WMI service goroutine
+	go wmiService(wmiRequests, wmiResponses)
+
+	logMessage(LOGLEVEL_INFO, "Process injector service started.")
 
 	for {
 		select {
-		case <-ticker.C:
-			select {
-			case <-quit:
-				logMessage(LOGLEVEL_INFO, "Shutting down process injector service.")
-				ticker.Stop()
-				return
-			default:
-			}
+		case <-quit:
+			logMessage(LOGLEVEL_INFO, "Shutting down process injector service.")
+			close(wmiRequests)
+			return
 
-			processes, error := process.Processes()
-			if error != nil {
-				logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Error getting processes: %v", error))
+		case resp := <-wmiResponses:
+			if resp.err != nil {
+				logMessage(LOGLEVEL_ERROR, fmt.Sprintf("WMI service error: %v", resp.err))
+				if hresult, ok := resp.err.(syscall.Errno); ok {
+					if hresult != 0x80041006 { // ignore "not available" error which can be temporary
+						return
+					}
+				}
 				continue
 			}
 
-			for _, proc := range processes {
-				select {
-				case <-quit:
-					logMessage(LOGLEVEL_INFO, "Shutting down process injector service.")
-					ticker.Stop()
-					return
-				default:
-				}
+			event := resp.event
+			logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("New process detected: Name=%s, PID=%d", event.Name, event.PID))
 
-				processName, error := proc.Name()
-				if error != nil {
-					logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Error getting process name for PID %d: %v", proc.Pid, error))
-					continue
-				}
-
-				if !isPidInExclusion(injectedPIDList, uint32(proc.Pid)) {
-					if isProcessNameInList(processName, injectProcessNameList) {
-						modHandle, err := GetInjectedLibraryModuleHandle(uint32(proc.Pid), injectionDLLPath)
-						if err != nil {
-							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d Error checking module handle: %v", proc.Pid, err))
-							continue
-						}
-
-						if modHandle == 0 {
-							logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("Found process to inject: %s (PID: %d)", processName, proc.Pid))
-							err = injectInProcess(uint32(proc.Pid), processName, injectionDLLPath, injectionFunctionName, injectionFunctionArg)
-							if err != nil {
-								logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Error injecting DLL: %v", proc.Pid, err))
-
-								if countOccurrences(injectionErrorPIDList, uint32(proc.Pid)) >= maxInjectionRetry {
-									logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID: %d - Impossible to inject in process. Adding to exclusions", proc.Pid))
-									injectedPIDList = append(injectedPIDList, uint32(proc.Pid))
-								}
-								injectionErrorPIDList = append(injectionErrorPIDList, uint32(proc.Pid))
-							} else {
-								injectedPIDList = append(injectedPIDList, uint32(proc.Pid))
-								logMessage(LOGLEVEL_DEBUG, fmt.Sprintf("PID %d added to injected list.", proc.Pid))
-							}
-						}
-					}
-				}
+			// If the process name is in the list, attempt injection
+			if isProcessNameInList(event.Name, injectProcessNameList) {
+				go func() {
+					HandleProcessInjection(event.Name, event.PID, injectionDLLPath, injectionFunctionName, injectionFunctionArg, refreshInterval, maxInjectionRetry)
+				}()
 			}
-
-		case <-quit:
-			logMessage(LOGLEVEL_INFO, "Shutting down process injector service.")
-			if tickerActive {
-				ticker.Stop()
-			}
-			return
 		}
 	}
 }
